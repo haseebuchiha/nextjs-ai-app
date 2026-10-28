@@ -1,0 +1,142 @@
+# Architecture
+
+{{ description }}
+
+This file records how the code is organised. Follow it for every change. The reasons behind each choice, and what's still open, are in `decisions.md`: the setup decisions first, then this project's own.
+
+Each area has its own rule file in `.claude/rules/`: `database.md`, `api-routes.md`, `screens.md`, `jobs.md`, `testing.md` and `llm.md`. Read the matching one before you create or edit files in that area. Claude Code loads an area file by itself only when it reads a matching file, not when it creates a new one. How code is written, formatted and checked is in `code-style.md`.
+
+In these rules, a model is a file in `models/` that reads and writes the database. The language model is called the LLM.
+
+## Tools
+
+- Next.js 16 (App Router), React 19, TypeScript in strict mode
+- Tailwind CSS 4 and shadcn/ui (built on Base UI, not Radix) for the interface, with lucide-react for icons
+- Prisma 7 with PostgreSQL for the database, connected through the `pg` driver adapter (`@prisma/adapter-pg`). prisma-lint checks the schema.
+- Zod 4 for checking anything that comes from outside: environment variables, request bodies, route parameters and the LLM's structured output
+- The AI SDK (`ai` with `@ai-sdk/openai`) for LLM calls, sent to an OpenAI-compatible endpoint
+- pino for logging, with pino-pretty to read the logs in development
+- pnpm for packages
+- Biome for formatting, with its linter off, and ESLint 9 for linting
+- Vitest, Testing Library and happy-dom for tests, and GitHub Actions for CI
+
+## Folders
+
+Each kind of code has one home, the way Rails does it. Folders are split by what the code does, not by feature. A new feature adds a file to several folders, not a folder of its own.
+
+```
+prisma/
+  schema.prisma      the database tables. Only the generator and the datasource so far
+  migrations/        the history of changes to those tables, made by the first `pnpm db:migrate`
+prisma.config.ts     Prisma's connection settings
+.prismalintrc.json   prisma-lint's rules for the schema
+eslint.config.mjs    the lint rules, including the import rules in "How a request flows"
+biome.json           Biome's formatting settings, and the files it skips
+components.json      shadcn's settings
+.env.example         every setting, with a local value. Copy it to .env
+decisions.md         what we chose and why
+.claude/
+  rules/             the rules for Claude, one file per area
+  hooks/             format and lint every file Claude edits
+.github/workflows/   CI: format, lint, type-check, test and build on every push
+tests/               tests, in the same folders as src/
+  setup/             set-up for the component tests
+src/
+  app/               pages and API routes only
+    layout.tsx       the root layout: the fonts and the page's main column
+    page.tsx         the home page
+    api/             the API routes
+  services/          what the app does: every process and every decision
+  models/            database reads and writes, one file per table
+  jobs/              work that runs on a timer or in the background
+  db/
+    client.ts        the one shared Prisma client
+    generated/       code Prisma generates, not committed, not linted
+  config/
+    env.ts           the only file that reads environment variables
+    logger.ts        the one shared pino logger
+  components/        our own interface pieces
+    ui/              shadcn components, added with the shadcn CLI. Only button.tsx so far
+  hooks/             browser-side state
+  lib/               small helpers with no server or browser dependencies
+    utils.ts         shadcn's `cn` helper for joining class names
+  instrumentation.ts Next's required name for its startup file. It only calls clearly named functions
+```
+
+`app/api/`, `services/`, `models/`, `jobs/` and `hooks/` start empty, with only a `.gitkeep`. Delete the `.gitkeep` once the folder has a real file.
+
+## How a request flows
+
+1. Something enters the app: a page, an API route or a job.
+2. It calls one service function. That function is the whole process.
+3. The service runs its steps in order. Each step is one of these:
+   - a small helper in the same service file, for a decision that belongs to this process
+   - a model function, for anything that touches the database
+   - a function from another service, for work that is reused elsewhere, like sending an email or calling the LLM
+4. The result goes back to whatever called the service.
+
+Code only calls downward or sideways, never upward:
+
+- Pages, API routes, jobs and `instrumentation.ts` call services. They never import `models/` or `db/`. Type-only imports, like a row type, are fine. They may read settings from `config/`.
+- Services hold every decision. They call models, other services, `config/` and `lib/`. They never import `app/`, `components/` or `hooks/`, so nothing about the interface goes in services.
+- Models only talk to the database. They make no decisions and never import `services/`, `jobs/`, `app/`, `components/` or `hooks/`.
+- Only files in `models/` import the Prisma client from `db/`. Everywhere else outside `db/` itself, only type-only imports from `db/` are allowed.
+- `config/` and `db/` sit at the bottom. They never import `services/`, `models/`, `jobs/`, `app/`, `components/` or `hooks/`. `db/client.ts` reads its connection string from `config/env.ts`.
+- Components, hooks and `lib/` are browser-side. They never import `services/`, `models/`, `jobs/`, `config/` or `db/`, not even for types. The one exception is a type-only import from `db/generated`. They get their data from pages, as props, or from API routes.
+- Tests in `tests/` may import from any folder.
+- Lint enforces every rule in this list. A page importing a model, or a component importing a server folder, fails `pnpm lint`.
+
+A job is an entry point like a route. It calls one service function, logs each run, and catches its own errors, so one failed run never stops the next. A job that starts with the app is started from `register` in `instrumentation.ts`, in the Node.js runtime only, by calling one clearly named function from `jobs/`.
+
+LLM calls are a service's step like any other. Their rules are in `.claude/rules/llm.md`.
+
+## Writing a service
+
+A service function reads like a list of steps. Each line's output feeds the next line.
+
+```ts
+export const placeOrder = async (request: OrderRequest) => {
+  const lines = priceOrderLines(request.items)
+  const order = await createOrder({ customerId: request.customerId, lines, total: sumLineTotals(lines) })
+  await sendOrderConfirmation(order)
+  return order
+}
+```
+
+`priceOrderLines`, `sumLineTotals` and `sendOrderConfirmation` are helpers in the same file. `createOrder` comes from `models/order.ts`. `sendOrderConfirmation` calls `sendEmail` from another service. If the email fails, it logs the error and the order still succeeds, because the row is already saved. Save first, then do the steps that can fail. This is an illustration, not code that exists yet.
+
+Services are long modules. One service file holds a whole area of work: the few functions it exports, plus every small helper those functions use. Keep adding helpers to the same file. Don't split them out into new files. Export only what other code calls, and keep the rest private to the file. A long file with a small list of exports is the goal.
+
+When a page or route needs a model read exactly as it is, the service re-exports it under its own name, like `export { findOrderById } from "@/models/order"` in `services/orders.ts`. Don't wrap it in a function that only forwards the call. A service function earns its place when it adds something, like a default page size it passes to the model.
+
+## Server code and browser code
+
+- Every file in `services/`, `models/`, `jobs/`, `db/` and `config/` starts with `import "server-only"`. If browser code imports one of these files, the build fails. Vitest swaps `server-only` for an empty module, so tests can import them.
+- `config/env.ts` is the only file in `src/` that reads environment variables. It checks them with Zod when it loads and stops the app with a clear message if one is wrong. Each setting is exported as a constant in capitals, like `DATABASE_URL`. The exceptions are root config files like `prisma.config.ts`, and the `NEXT_RUNTIME` check in `instrumentation.ts`.
+- Settings: `DATABASE_URL` (required), `LOG_LEVEL` (optional, defaults to `info`, and `silent` turns logs off), `LLM_BASE_URL` (optional, the OpenAI-compatible endpoint, defaults to `http://localhost:10531/v1`), `LLM_API_KEY` (optional, defaults to `not-needed`, for a local endpoint that ignores it) and `LLM_MODEL` (optional, defaults to `gpt-5.5`). Add a new setting to both `config/env.ts` and `.env.example`.
+- `db/client.ts` makes the one Prisma client and keeps it on `globalThis`, so development reloads don't open new connections. Every connection runs in UTC.
+- Pages run on the server. They get data by calling a service and pass it down to components as props.
+- There's no client data library, like TanStack Query. The browser doesn't fetch a page's data itself. Pages load it on the server. To show fresh data, re-run the page with `router.refresh()`.
+- Interface logic stays on the browser side:
+  - Components draw the screen.
+  - Hooks hold browser state.
+  - Small display helpers, like turning `1234` into `"1,234 ms"`, sit next to the component that uses them. Helpers that several components share live in one file in `components/`.
+- `lib/` holds small helpers that both sides use, with no server or browser dependencies, like the Zod check for an id that a route and a page both read.
+
+## API routes, not server actions
+
+- We don't use server actions. When the browser sends input, or fetches anything by itself, it calls an API route in `src/app/api/`.
+- A route can be called with curl and tested like any other code, and the same endpoint serves the browser, scripts and outside callers.
+- Our own pages don't call the API routes. A page calls the same services directly on the server.
+- An API route file stays thin: read the request, check it with Zod, call one service, return the result. The details are in `.claude/rules/api-routes.md`.
+
+## Logging
+
+- pino is the one logger, in `src/config/logger.ts`. Server code imports `logger` from there. `console` is banned by lint.
+- Log an error under the `err` key, like `logger.error({ err: error, orderId }, "Order email failed")`. pino prints the stack only for that key.
+- Each of our logs is one line of JSON written to standard output. Whatever runs the app captures it, so pino never touches files itself.
+- For an uncaught server error, Next also prints its own multi-line error block next to our JSON line. So not every line in the log is JSON.
+- `onRequestError` in `src/instrumentation.ts` sends every uncaught server error to `logRequestError`, which logs it with the request's method and path.
+- In development, `pnpm dev` pipes the output through pino-pretty to make it readable. Don't use pino's `transport` option. It runs in a separate thread that breaks under Next's bundler.
+- Because of that pipe, `pnpm dev --port 3001` sends the port to pino-pretty, not Next. Use `PORT=3001 pnpm dev` instead.
+- `LOG_LEVEL` sets how much is logged. Tests and CI run with `silent`.

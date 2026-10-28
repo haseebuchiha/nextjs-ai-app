@@ -1,0 +1,31 @@
+# {{ project_name }}
+
+{{ description }}
+
+## Start
+
+```bash
+pnpm install
+cp .env.example .env
+pnpm db:migrate
+pnpm dev
+```
+
+Set `DATABASE_URL` and the `LLM_*` values in `.env` first. `pnpm db:migrate` needs a running Postgres.
+
+## Checks
+
+```bash
+pnpm lint
+pnpm format:check
+pnpm exec next typegen && pnpm exec tsc --noEmit
+pnpm test
+pnpm build
+```
+
+## Where things are
+
+- `AGENTS.md` and `.claude/rules/`: how the code is laid out and written
+- `decisions.md`: the setup decisions and this project's own decisions
+
+This project was made from the `nextjs-ai-app` copier template. Run `uvx copier update` to pull later template changes.
