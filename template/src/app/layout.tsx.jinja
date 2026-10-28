@@ -3,8 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: {{ project_name | tojson }},
-  description: {{ description | tojson }},
+  title: "{{ project_name | replace('\\', '\\\\') | replace('"', "'") }}",
+  description: "{{ description | replace('\\', '\\\\') | replace('"', "'") }}",
 }
 
 const RootLayout = ({ children }: LayoutProps<"/">) => (
