@@ -3,8 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "New project",
-  description: "A Next.js app with Postgres and an LLM.",
+  title: {{ project_name | tojson }},
+  description: {{ description | tojson }},
 }
 
 const RootLayout = ({ children }: LayoutProps<"/">) => (
